@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  grpc-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./:/app
+    ports:
+      - "50051:50051"
+    # Add any environment variables or volumes as needed
+    networks:
+      - proxy
+  grpcui:
+    image: fullstorydev/grpcui
+    command: -plaintext grpc-service:50051
+    ports:
+      - "7070:8080"
+    depends_on:
+      - grpc-service
+    networks:
+      - proxy
+networks:
+  proxy:
+    external: true

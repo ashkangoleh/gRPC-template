@@ -1,9 +1,9 @@
 import inspect
 import clickhouse_connect
 from typing import Any, Dict, List, Optional
-from server import setup_logging
+import logging
 
-logger = setup_logging()
+logger = logging.getLogger(__name__)
 
 class ClickhouseHandler:
     def __init__(self, host: str, port: int, user: str, password: str, database: str):

@@ -4,6 +4,7 @@ main file to run the gRPC server with OpenTelemetry
 import asyncio
 import grpc
 import importlib.util
+from typing import Dict
 from pathlib import Path
 from grpc_reflection.v1alpha import reflection
 from opentelemetry.instrumentation.grpc import GrpcAioInstrumentorServer # noqa
@@ -17,24 +18,34 @@ from server import setup_logging
 
 def load_pb2_files():
     """
-    Dynamically loads all pb2 and pb2_grpc files from the root directory
+    Dynamically loads all *_pb2.py and *_pb2_grpc.py files from the current directory.
     """
     pb2_modules = {}
-    root_dir = Path(__file__).parent.parent  # Adjust path to the root folder
+    current_dir = Path(__file__).parent  # Set to current directory
 
-    for pb2_file in root_dir.rglob("*_pb2.py"):
+    # Load *_pb2.py files
+    for pb2_file in current_dir.glob("*_pb2.py"):
         module_name = pb2_file.stem
-        spec = importlib.util.spec_from_file_location(module_name, pb2_file)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        pb2_modules[module_name] = module
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, pb2_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            pb2_modules[module_name] = module
+            print(f"Loaded module: {module_name}")
+        except Exception as e:
+            print(f"Failed to load module {module_name}: {e}")
 
-    for pb2_grpc_file in root_dir.rglob("*_pb2_grpc.py"):
+    # Load *_pb2_grpc.py files
+    for pb2_grpc_file in current_dir.glob("*_pb2_grpc.py"):
         module_name = pb2_grpc_file.stem
-        spec = importlib.util.spec_from_file_location(module_name, pb2_grpc_file)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        pb2_modules[module_name] = module
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, pb2_grpc_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            pb2_modules[module_name] = module
+            print(f"Loaded module: {module_name}")
+        except Exception as e:
+            print(f"Failed to load module {module_name}: {e}")
 
     return pb2_modules
 
@@ -53,9 +64,14 @@ def load_required_services(pb2_modules):
     """
     Load required services and fallback if not found.
     """
-    pb2_grpc_module = pb2_modules.get("myservice_pb2_grpc")
-    pb2_module = pb2_modules.get("myservice_pb2")
-
+    pb2_grpc_module = None
+    pb2_module = None
+    if isinstance(pb2_modules,Dict):
+        for k,v in pb2_modules.items():
+            if k.endswith("grpc"):
+                pb2_grpc_module = pb2_modules.get(k)
+            elif k.endswith("pb2"):
+                pb2_module = pb2_modules.get(k)
     if not pb2_module or not pb2_grpc_module:
         raise ImportError("Failed to dynamically load required pb2 or pb2_grpc modules. Check proto generation.")
     return pb2_module, pb2_grpc_module

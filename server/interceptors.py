@@ -4,8 +4,11 @@ This module provides a logging interceptor for gRPC servers.
 import grpc
 import logging
 
+from grpc import RpcMethodHandler
+
+
 class LoggingInterceptor(grpc.aio.ServerInterceptor):
-    async def intercept_service(self, continuation, handler_call_details)-> None:
+    async def intercept_service(self, continuation, handler_call_details)-> RpcMethodHandler:
         """
         Intercepts gRPC service calls to log request and response details.
 

@@ -6,8 +6,6 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Define the Settings class
-
-
 class Settings(BaseSettings):
     # For ClickHouse connection
     CLICKHOUSE_HOST: str

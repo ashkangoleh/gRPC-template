@@ -21,6 +21,8 @@ services:
       - grpc-service
     networks:
       - proxy
+    links: # for grpcui to work with grpc service it needs to be linked to it
+      - grpc-service
 networks:
   proxy:
     external: true

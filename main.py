@@ -1,3 +1,6 @@
+"""
+main file to run the gRPC server with OpenTelemetry
+"""
 import asyncio
 import grpc
 from grpc_reflection.v1alpha import reflection
@@ -7,11 +10,11 @@ import myservice_pb2
 import myservice_pb2_grpc
 
 from server.service_impl import UserService
-from server.config import GRPC_SERVER_HOST, GRPC_SERVER_PORT
-from server.metrics import setup_tracing_and_metrics
-from server.interceptors import LoggingInterceptor
-from server.health import add_health_check
-from server.utils import setup_logging
+from server.config import settings
+from server import setup_tracing_and_metrics
+from server import LoggingInterceptor
+from server import add_health_check
+from server import setup_logging
 
 async def serve():
     setup_logging()
@@ -38,7 +41,7 @@ async def serve():
     # Health Check
     add_health_check(server)
 
-    listen_addr = f"{GRPC_SERVER_HOST}:{GRPC_SERVER_PORT}"
+    listen_addr = f"{settings.GRPC_SERVER_HOST}:{settings.GRPC_SERVER_PORT}"
     print(f"Starting gRPC server on {listen_addr}")
     server.add_insecure_port(listen_addr)
 

@@ -1,3 +1,6 @@
+"""
+Instrumentation for OpenTelemetry and gRPC as Dynamic Tracing and Metrics decorators
+"""
 import logging
 from functools import wraps
 from opentelemetry.trace import Status, StatusCode
@@ -5,62 +8,146 @@ import grpc
 
 logger = logging.getLogger(__name__)
 
+
 def traced_and_measured(tracer, request_counter, span_name_func, metric_attrs_func):
+    """
+    Decorator for tracing and measuring a function using OpenTelemetry.
+
+    This decorator provides a default implementation of tracing and metrics instrumentation.
+    It expects four arguments:
+
+    - `tracer`: a function that takes an instance of the class and returns an `opentelemetry.trace.Tracer`
+    - `request_counter`: a function that takes an instance of the class and returns an `opentelemetry.metrics.Meter`
+    - `span_name_func`: a function that takes the function arguments and returns a name for the span
+    - `metric_attrs_func`: a function that takes the function arguments and returns a dictionary of attributes to set on the span and metric
+
+    The decorator expects the function being decorated to have the following signature:
+
+    - The first argument is an instance of the class
+    - The second argument is the request object
+    - The third argument is the gRPC context (optional)
+
+    The decorator will:
+
+    - Start a span with the name returned by `span_name_func`
+    - Set attributes on the span from the dictionary returned by `metric_attrs_func`
+    - Set the span status to OK if no error is encountered, or ERROR if an error occurs
+    - Increment the metric counter returned by `request_counter` with the attributes from `metric_attrs_func`
+    """
+
     def decorator(func):
+        """
+        Decorator to instrument a function with OpenTelemetry tracing and metrics.
+
+        It wraps the original function, adding tracing and metrics instrumentation.
+        If the original function is a coroutine, the wrapped function will also be a coroutine.
+
+        :param func: The function to be instrumented
+        :return: The wrapped function with tracing and metrics
+        """
+
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            instance = args[0]
+            """
+            Async wrapper for a function that starts a span and sets attributes based on the provided functions.
+            It also handles error recording based on gRPC context and increments metric counters.
 
+            :param func: The function to be instrumented
+            :return: The result of the original function
+            """
+            instance = args[0]
             actual_tracer = tracer(instance)
             actual_request_counter = request_counter(instance)
-
             span_name = span_name_func(args)
             attributes = metric_attrs_func(args)
 
             with actual_tracer.start_as_current_span(span_name) as span:
-                # Set attributes on the span
-                for k, v in attributes.items():
-                    span.set_attribute(k, v)
+                _set_span_attributes(span, attributes)
+                logger.info(f"Starting span '{span_name}' with attributes {attributes}")
 
-                logger.info(f"Starting {span_name} with attributes {attributes}")
+                _increment_metrics(actual_request_counter, attributes)
 
-                # Increment the metric counter with dynamic attributes
-                actual_request_counter.add(1, attributes)
+                try:
+                    result = await func(*args, **kwargs)
+                    _handle_span_status(span, args)
+                except Exception as e:
+                    _record_exception(span, e)
+                    raise
 
-                # Execute the actual function
-                result = await func(*args, **kwargs)
-
-                # Get the gRPC context from the arguments, typically args[2]
-                # Adjust if your method signature differs
-                context = args[2] if len(args) > 2 else None
-
-                if context is not None:
-                    # Use public methods to get code and details
-                    error_code = context.code()
-                    error_details = context.details()
-                    # If the code is not OK, record an error on the span
-                    if (error_code is not None) and (grpc.StatusCode.OK != error_code):
-                        span.set_status(Status(StatusCode.ERROR, f"gRPC error: {error_code}, details: {error_details}"))
-                        span.set_attribute("error", True)
-                        span.set_attribute("error.code", f"{error_code}")  # numeric code
-                        span.set_attribute("error.description", error_details)
-
-                        logger.error(f"Span {span_name} completed with error: {error_code} - {error_details}")
-                    else:
-                        # If the code is OK, explicitly mark span as successful
-                        span.set_status(Status(StatusCode.OK))
-                else:
-                    # If no context is available, just set span to OK
-                    span.set_status(Status(StatusCode.OK))
-
-                logger.info(f"Completed {span_name}")
+                logger.info(f"Completed span '{span_name}'")
                 return result
 
         return async_wrapper
+
     return decorator
 
 
+def _set_span_attributes(span, attributes):
+    """
+    Sets multiple attributes on the given span.
 
+    :param span: The OpenTelemetry span
+    :param attributes: A dictionary of attributes to set on the span
+    """
+    for key, value in attributes.items():
+        span.set_attribute(key, value)
+
+
+def _increment_metrics(counter, attributes):
+    """
+    Increments the metric counter with the provided attributes.
+
+    :param counter: The OpenTelemetry meter counter
+    :param attributes: A dictionary of attributes for the metric
+    """
+    counter.add(1, attributes)
+
+
+def _handle_span_status(span, args):
+    """
+    Handles setting the span status based on the gRPC context.
+
+    :param span: The OpenTelemetry span
+    :param args: The arguments passed to the original function
+    """
+    context = args[2] if len(args) > 2 else None
+    if context:
+        error_code = context.code()
+        error_details = context.details()
+        if error_code and error_code != grpc.StatusCode.OK:
+            span.set_status(Status(StatusCode.ERROR, f"gRPC error: {error_code}, details: {error_details}"))
+            _set_error_attributes(span, error_code, error_details)
+            logger.error(f"Span completed with error: {error_code} - {error_details}")
+        else:
+            span.set_status(Status(StatusCode.OK))
+    else:
+        span.set_status(Status(StatusCode.OK))
+
+
+def _set_error_attributes(span, error_code, error_details):
+    """
+    Sets error-related attributes on the span.
+
+    :param span: The OpenTelemetry span
+    :param error_code: The gRPC error code
+    :param error_details: The gRPC error details
+    """
+    span.set_attribute("error", True)
+    span.set_attribute("error.code", str(error_code.value))  # Numeric code
+    span.set_attribute("error.description", error_details)
+
+
+def _record_exception(span, exception):
+    """
+    Records an exception on the span and sets its status to ERROR.
+
+    :param span: The OpenTelemetry span
+    :param exception: The exception to record
+    """
+    span.record_exception(exception)
+    span.set_status(Status(StatusCode.ERROR, str(exception)))
+    span.set_attribute("error", True)
+    logger.error(f"Exception recorded in span: {exception}")
 def dynamic_span_name(args):
     """
     Construct a string name for a span, given arguments passed to an RPC method.
@@ -79,7 +166,7 @@ def dynamic_span_name(args):
     return f"Handler: {service_name}.{method_id}"
 
 
-def get_endpoint_attrs(service_name, request_type):
+def _get_endpoint_attrs(service_name, request_type):
     """
     Construct a dictionary of attributes related to the endpoint being called.
 
@@ -97,15 +184,29 @@ def get_endpoint_attrs(service_name, request_type):
     return {"endpoint": f"{service_name}.{request_type}"}
 
 
-def get_protobuf_attrs(request):
+def _get_protobuf_attrs(request):
+    """
+    Extract a dictionary of attributes from a Protobuf message.
+
+    The dictionary contains a key-value pair for each field in the message.
+    The key is the name of the field and the value is a string representation
+    of the field's value (or "unknown" if the field is not set).
+
+    :param request: The Protobuf message to extract attributes from.
+    :type request: google.protobuf.message.Message
+    :returns: A dictionary of extracted attributes.
+    :rtype: dict[str, str]
+    """
     attrs = {}
+    # Iterate over the fields in the message
     for field in request.DESCRIPTOR.fields:
+        # Get the name and value of the field
         field_name = field.name
         field_value = getattr(request, field_name, None)
         attrs[field_name] = str(field_value) if field_value is not None else "unknown"
     return attrs
 
-def get_generic_attrs(request):
+def _get_generic_attrs(request):
     """
     Extract a dictionary of attributes from a generic object using its
     public (non-private) attributes. This is a fallback strategy for
@@ -117,6 +218,7 @@ def get_generic_attrs(request):
     :rtype: dict[str, str]
     """
     attrs = {}
+    # Iterate over the public (non-private) attributes of the object
     for attr_name in dir(request):
         if not attr_name.startswith("_") and not callable(getattr(request, attr_name)):
             field_value = getattr(request, attr_name, None)
@@ -124,15 +226,30 @@ def get_generic_attrs(request):
     return attrs
 
 def dynamic_metric_attrs(args):
+    """
+    Construct a dictionary of attributes for a metric, given arguments passed to an RPC method.
+
+    The dictionary contains a key-value pair for each field in the message, plus the endpoint
+    information. The key is the name of the field and the value is a string representation
+    of the field's value (or "unknown" if the field is not set).
+
+    :param args: The arguments passed to the RPC method
+    :return: A dictionary of attributes.
+    :rtype: dict[str, str]
+    """
+    # Extract the arguments from the args tuple 
     request = args[1]
     service_name = args[0].__class__.__name__
     request_type = request.__class__.__name__
 
-    attrs = get_endpoint_attrs(service_name, request_type)
-
+    # Construct the endpoint attributes
+    attrs = _get_endpoint_attrs(service_name, request_type)
+    # If the request has a DESCRIPTOR with full_name, use it; otherwise fallback to class name
     if hasattr(request, 'DESCRIPTOR'):
-        attrs.update(get_protobuf_attrs(request))
+        # Extract attributes from the Protobuf message
+        attrs.update(_get_protobuf_attrs(request))
     else:
-        attrs.update(get_generic_attrs(request))
+        # Extract attributes from the generic object
+        attrs.update(_get_generic_attrs(request))
 
     return attrs

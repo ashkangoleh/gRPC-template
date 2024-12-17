@@ -1,24 +1,22 @@
+"""
+service_impl.py / server module for the gRPC server
+"""
 import asyncio
 import grpc
 
-from .config import (
-    CLICKHOUSE_HOST, CLICKHOUSE_PORT,
-    CLICKHOUSE_USER, CLICKHOUSE_PASSWORD,
-    CLICKHOUSE_DATABASE
-)
 from .ch_handler import ClickhouseHandler
 from .models import GetUserRequestModel, ListUsersRequestModel, InsertUserRequestModel
 from myservice_pb2 import User as UserProto, GetUserResponse, ListUsersResponse, Empty
 from .instrumentation import traced_and_measured, dynamic_span_name, dynamic_metric_attrs
-
+from server.config import settings
 import myservice_pb2_grpc
 
 handler = ClickhouseHandler(
-    host=CLICKHOUSE_HOST,
-    port=CLICKHOUSE_PORT,
-    user=CLICKHOUSE_USER,
-    password=CLICKHOUSE_PASSWORD,
-    database=CLICKHOUSE_DATABASE
+    host=settings.CLICKHOUSE_HOST,
+    port=settings.CLICKHOUSE_PORT,
+    user=settings.CLICKHOUSE_USER,
+    password=settings.CLICKHOUSE_PASSWORD,
+    database=settings.CLICKHOUSE_DATABASE
 )
 class UserService(myservice_pb2_grpc.UserServiceServicer):
     def __init__(self, tracer, request_counter):
@@ -32,6 +30,15 @@ class UserService(myservice_pb2_grpc.UserServiceServicer):
             metric_attrs_func=dynamic_metric_attrs
         )
     async def GetUser(self, request, context):
+        """
+        Get a user by ID.
+
+        If the user is not found, it will return NOT_FOUND status.
+
+        :param request: GetUserRequest with the user ID
+        :param context: gRPC request context
+        :return: GetUserResponse with the user data, or NOT_FOUND status if not found
+        """
         req_data = {"user_id": request.user_id}
         try:
             validated = GetUserRequestModel(**req_data)
@@ -60,6 +67,17 @@ class UserService(myservice_pb2_grpc.UserServiceServicer):
             metric_attrs_func=dynamic_metric_attrs
         )
     async def ListUsers(self, request, context):
+        """
+        List users with pagination.
+
+        Retrieves a list of users from the database, ordered by user ID, with pagination support.
+        If the request contains invalid pagination parameters, it returns an INVALID_ARGUMENT status.
+
+        :param request: ListUsersRequest containing pagination parameters (page and page_size).
+        :param context: gRPC request context.
+        :return: ListUsersResponse containing a list of User protos and the total number of users.
+        """
+
         req_data = {"page": request.page, "page_size": request.page_size}
         try:
             validated = ListUsersRequestModel(**req_data)
@@ -91,6 +109,18 @@ class UserService(myservice_pb2_grpc.UserServiceServicer):
             metric_attrs_func=dynamic_metric_attrs
         )
     async def InsertUser(self, request, context):
+        """
+        Insert a new user into the database.
+
+        Validates the username and email fields from the request. If validation fails,
+        it returns an INVALID_ARGUMENT status. Upon successful validation, it inserts
+        the user into the database.
+
+        :param request: InsertUserRequest containing the username and email.
+        :param context: gRPC request context.
+        :return: An empty message on success, or INVALID_ARGUMENT status if validation fails.
+        """
+
         req_data = {"username": request.username, "email": request.email}
         try:
             validated = InsertUserRequestModel(**req_data)

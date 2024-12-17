@@ -3,13 +3,47 @@ service_impl.py / server module for the gRPC server
 """
 import asyncio
 import grpc
-
+import importlib.util
+from pathlib import Path
 from .ch_handler import ClickhouseHandler
 from .models import GetUserRequestModel, ListUsersRequestModel, InsertUserRequestModel
-from myservice_pb2 import User as UserProto, GetUserResponse, ListUsersResponse, Empty
 from .instrumentation import traced_and_measured, dynamic_span_name, dynamic_metric_attrs
 from server.config import settings
-import myservice_pb2_grpc
+
+# Dynamic loading of myservice_pb2 and myservice_pb2_grpc
+def load_pb2_modules():
+    root_dir = Path(__file__).parent.parent  # Adjust path to project root
+    pb2_modules = {}
+
+    for pb_file in root_dir.rglob("*_pb2.py"):
+        module_name = pb_file.stem
+        if module_name not in pb2_modules:  # Avoid overwriting modules
+            spec = importlib.util.spec_from_file_location(module_name, pb_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            pb2_modules[module_name] = module
+
+    for pb_grpc_file in root_dir.rglob("*_pb2_grpc.py"):
+        module_name = pb_grpc_file.stem
+        if module_name not in pb2_modules:  # Avoid overwriting modules
+            spec = importlib.util.spec_from_file_location(module_name, pb_grpc_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            pb2_modules[module_name] = module
+
+    return pb2_modules
+
+def get_module(pb2_modules, name):
+    if name not in pb2_modules:
+        available_modules = ", ".join(pb2_modules.keys())
+        raise ImportError(f"Required module '{name}' not found. Available modules: [{available_modules}]. Check proto file generation.")
+    return pb2_modules[name]
+
+pb2_modules = load_pb2_modules()
+print(f"Loaded modules: {list(pb2_modules.keys())}")
+
+myservice_pb2 = get_module(pb2_modules, "myservice_pb2")
+myservice_pb2_grpc = get_module(pb2_modules, "myservice_pb2_grpc")
 
 handler = ClickhouseHandler(
     host=settings.CLICKHOUSE_HOST,
@@ -18,34 +52,26 @@ handler = ClickhouseHandler(
     password=settings.CLICKHOUSE_PASSWORD,
     database=settings.CLICKHOUSE_DATABASE
 )
+
 class UserService(myservice_pb2_grpc.UserServiceServicer):
     def __init__(self, tracer, request_counter):
         self._tracer = tracer
         self._request_counter = request_counter
 
     @traced_and_measured(
-            tracer=lambda self: self._tracer,
-            request_counter=lambda self: self._request_counter,
-            span_name_func=dynamic_span_name,
-            metric_attrs_func=dynamic_metric_attrs
-        )
+        tracer=lambda self: self._tracer,
+        request_counter=lambda self: self._request_counter,
+        span_name_func=dynamic_span_name,
+        metric_attrs_func=dynamic_metric_attrs
+    )
     async def GetUser(self, request, context):
-        """
-        Get a user by ID.
-
-        If the user is not found, it will return NOT_FOUND status.
-
-        :param request: GetUserRequest with the user ID
-        :param context: gRPC request context
-        :return: GetUserResponse with the user data, or NOT_FOUND status if not found
-        """
         req_data = {"user_id": request.user_id}
         try:
             validated = GetUserRequestModel(**req_data)
         except Exception as e:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(e))
-            return GetUserResponse()
+            return myservice_pb2.GetUserResponse()
 
         query = "SELECT id, username, email FROM users WHERE id = %(id)s"
         params = {"id": validated.user_id}
@@ -54,37 +80,26 @@ class UserService(myservice_pb2_grpc.UserServiceServicer):
         if not rows:
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details("User not found")
-            return GetUserResponse()
+            return myservice_pb2.GetUserResponse()
 
         row = rows[0]
-        user_proto = UserProto(id=row["id"], username=row["username"], email=row["email"])
-        return GetUserResponse(user=user_proto)
+        user_proto = myservice_pb2.User(id=row["id"], username=row["username"], email=row["email"])
+        return myservice_pb2.GetUserResponse(user=user_proto)
 
     @traced_and_measured(
-            tracer=lambda self: self._tracer,
-            request_counter=lambda self: self._request_counter,
-            span_name_func=dynamic_span_name,
-            metric_attrs_func=dynamic_metric_attrs
-        )
+        tracer=lambda self: self._tracer,
+        request_counter=lambda self: self._request_counter,
+        span_name_func=dynamic_span_name,
+        metric_attrs_func=dynamic_metric_attrs
+    )
     async def ListUsers(self, request, context):
-        """
-        List users with pagination.
-
-        Retrieves a list of users from the database, ordered by user ID, with pagination support.
-        If the request contains invalid pagination parameters, it returns an INVALID_ARGUMENT status.
-
-        :param request: ListUsersRequest containing pagination parameters (page and page_size).
-        :param context: gRPC request context.
-        :return: ListUsersResponse containing a list of User protos and the total number of users.
-        """
-
         req_data = {"page": request.page, "page_size": request.page_size}
         try:
             validated = ListUsersRequestModel(**req_data)
         except Exception as e:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(e))
-            return ListUsersResponse()
+            return myservice_pb2.ListUsersResponse()
 
         offset = (validated.page - 1) * validated.page_size
         limit = validated.page_size
@@ -98,43 +113,28 @@ class UserService(myservice_pb2_grpc.UserServiceServicer):
         total = total_rows[0]["cnt"] if total_rows else 0
 
         users = [
-            UserProto(id=row["id"], username=row["username"], email=row["email"]) for row in rows
+            myservice_pb2.User(id=row["id"], username=row["username"], email=row["email"])
+            for row in rows
         ]
-        return ListUsersResponse(users=users, total=total)
+        return myservice_pb2.ListUsersResponse(users=users, total=total)
 
     @traced_and_measured(
-            tracer=lambda self: self._tracer,
-            request_counter=lambda self: self._request_counter,
-            span_name_func=dynamic_span_name,
-            metric_attrs_func=dynamic_metric_attrs
-        )
+        tracer=lambda self: self._tracer,
+        request_counter=lambda self: self._request_counter,
+        span_name_func=dynamic_span_name,
+        metric_attrs_func=dynamic_metric_attrs
+    )
     async def InsertUser(self, request, context):
-        """
-        Insert a new user into the database.
-
-        Validates the username and email fields from the request. If validation fails,
-        it returns an INVALID_ARGUMENT status. Upon successful validation, it inserts
-        the user into the database.
-
-        :param request: InsertUserRequest containing the username and email.
-        :param context: gRPC request context.
-        :return: An empty message on success, or INVALID_ARGUMENT status if validation fails.
-        """
-
         req_data = {"username": request.username, "email": request.email}
         try:
             validated = InsertUserRequestModel(**req_data)
         except Exception as e:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(str(e))
-            return Empty()
+            return myservice_pb2.Empty()
 
-        # Construct the raw query string
-        insert_query = f"INSERT INTO users (username, email) VALUES ('{validated.username}', '{validated.email}')"
+        insert_query = "INSERT INTO users (username, email) VALUES (%(username)s, %(email)s)"
+        params = {"username": validated.username, "email": validated.email}
+        await asyncio.to_thread(handler.execute, insert_query, params)
 
-        # Use the execute method
-        await asyncio.to_thread(handler.execute, insert_query)
-
-        return Empty()
-
-
+        return myservice_pb2.Empty()
